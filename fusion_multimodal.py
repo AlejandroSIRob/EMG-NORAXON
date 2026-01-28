@@ -101,7 +101,7 @@ def remapear_a_frecuencia_maestra(tiempo_maestro, tiempo_sen, senal_val):
     return f(tiempo_maestro)
 
 def main_fusion():
-    # --- 1. DEFINIR RUTAS DE ARCHIVOS (EJEMPLO) ---
+    # --- 1. DEFINIR RUTAS DE ARCHIVOS  ---
     # Cambia esto por tus rutas reales o usa argparse
     path_fuerza = "datos_sensor_fuerza.csv"
     path_emg = "datos_noraxon.csv"
