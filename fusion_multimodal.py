@@ -1,196 +1,340 @@
 """
-FUSION MULTIMODAL AUTOMÁTICA (V11 - Full Scientific Suite)
+FUSION MULTIMODAL AUTOMÁTICA (V22 - Global Sync & Composite EMG)
 ---------------------------------------------------------
 Autor: Alejandro Solar Iglesias
-Objetivo: 
-  - Procesado Dual: Raw (2000Hz) para visualización y Procesado (100Hz) para datos.
-  - Sincronización triple: Fuerza, EMG y Xsens.
-  - Dashboards de Control y Validación de Calidad (SNR).
+Mejoras Críticas:
+  - EMG: Crea una señal compuesta (Suma de músculos de impacto) y busca el 
+    máximo global, no local. Esto corrige desfases grandes entre dispositivos.
+  - VISUALIZACIÓN: Normaliza las señales en las gráficas para verificar la 
+    sincronización visualmente (0 a 1).
+  - FUERZA: Mantiene la lógica de Triple Clap / Primer Contacto.
 """
 
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d
+from scipy.signal import find_peaks
 import os
 import glob
 import sys
 
-# IMPORTAMOS TU LIBRERÍA CIENTÍFICA
+# INTENTO DE IMPORTAR LIBRERÍA CIENTÍFICA
 try:
     import noraxon_analytics as na
 except ImportError:
-    print("[ERROR] No se encuentra 'noraxon_analytics.py'. Asegúrate de que esté en la misma carpeta.")
+    print("[ERROR] No se encuentra 'noraxon_analytics.py'.")
     sys.exit()
 
 # =========================================================
 # 1. CONFIGURACIÓN
 # =========================================================
-RUTA_CARPETA_TOMA = r"C:\Users\alexs\Desktop\MUESTRAS\V1"
 FS_MASTER = 100.0        
-FS_EMG_ORIG = na.DEFAULT_FS # 2000 Hz
+FS_EMG_ORIG = na.DEFAULT_FS 
+
+# Configuración de Búsqueda
+SEARCH_WINDOW_S = 60.0      # Analizar hasta 60s de grabación
+SKIP_START_S = 2.0          # Ignorar los primeros 2s (ruido botón)
+
+# Umbrales Fuerza
+UMBRAL_CONTACTO_N = 1.0     
+MIN_DIST_CLAP_S = 0.15      
+FRACCIONES_UMBRAL = [0.5, 0.3, 0.1] 
 
 # =========================================================
-# 2. MOTOR DE BÚSQUEDA
+# 2. GESTIÓN DE ARCHIVOS
 # =========================================================
 def buscar_archivo(patron_glob):
     archivos = glob.glob(patron_glob)
     return archivos[0] if archivos else None
 
-def preparar_rutas():
-    print(f"\n--- INICIANDO PROCESADO MAESTRO: {os.path.basename(RUTA_CARPETA_TOMA)} ---")
-    out_dir = os.path.join(RUTA_CARPETA_TOMA, "PROCESADO_COMPLETO")
+def preparar_rutas(ruta_base):
+    if not os.path.exists(ruta_base):
+        print(f"[ERROR] Ruta no existe: {ruta_base}")
+        sys.exit(1)
+        
+    print(f"\n--- PROCESANDO: {os.path.basename(ruta_base)} ---")
+    out_dir = os.path.join(ruta_base, "PROCESADO_COMPLETO")
     if not os.path.exists(out_dir): os.makedirs(out_dir)
     
-    # Localizar archivos críticos
-    f_path = buscar_archivo(os.path.join(RUTA_CARPETA_TOMA, "FUERZA", "*.csv"))
-    e_path = buscar_archivo(os.path.join(RUTA_CARPETA_TOMA, "EMG", "*.csv"))
-    k_path = buscar_archivo(os.path.join(RUTA_CARPETA_TOMA, "PROCESADO-Xsens", "*.sto"))
+    f_path = buscar_archivo(os.path.join(ruta_base, "FUERZA", "*.csv"))
+    e_path = buscar_archivo(os.path.join(ruta_base, "EMG", "*.csv"))
+    k_path = buscar_archivo(os.path.join(ruta_base, "PROCESADO-Xsens", "*.sto"))
     
+    missing = []
+    if not f_path: missing.append("Carpeta FUERZA")
+    if not e_path: missing.append("Carpeta EMG")
+    if not k_path: missing.append("Carpeta Xsens")
+    
+    if missing:
+        print(f"[ERROR CRÍTICO] Faltan archivos en: {', '.join(missing)}")
+        return None, None, None, None
+
     return f_path, e_path, k_path, out_dir
 
 # =========================================================
-# 3. MAIN (Procesado Dual Completo)
+# 3. MOTORES DE SINCRONIZACIÓN
+# =========================================================
+
+def detectar_t0_fuerza(df_fuerza):
+    """
+    Encuentra el instante del golpe principal en la señal de fuerza.
+    """
+    # 1. Inversión si es necesario (para que picos sean positivos)
+    if df_fuerza['Fz'].mean() < -5.0: 
+        df_fuerza['Fz'] = df_fuerza['Fz'] * -1
+    
+    # 2. Tara y Magnitud
+    offset = df_fuerza['Fz'].iloc[0:20].mean()
+    fz = (df_fuerza['Fz'] - offset).values
+    fz_abs = np.abs(fz)
+    time = df_fuerza['Time_s'].values
+    
+    # 3. Ventana de búsqueda
+    mask = (time > SKIP_START_S) & (time < SEARCH_WINDOW_S)
+    fz_search = fz_abs[mask]
+    time_search = time[mask]
+    
+    if len(fz_search) == 0: return time[0]
+    
+    max_val = np.max(fz_search)
+    
+    # ESTRATEGIA A: TRIPLE CLAP (Adaptativo)
+    for frac in FRACCIONES_UMBRAL:
+        umbral = max(max_val * frac, 5.0)
+        peaks, _ = find_peaks(fz_search, height=umbral, distance=int(MIN_DIST_CLAP_S * 100))
+        
+        if len(peaks) >= 3:
+            t1, t3 = time_search[peaks[0]], time_search[peaks[2]]
+            if (t3 - t1) < 5.0:
+                print(f"[SYNC FUERZA] Triple Clap detectado (Pico={fz_search[peaks[0]]:.1f}N) -> T={t1:.2f}s")
+                return t1
+
+    # ESTRATEGIA B: PRIMER CONTACTO (Si no hay claps claros)
+    mask_contact = fz_search > UMBRAL_CONTACTO_N
+    if np.any(mask_contact):
+        idx = np.argmax(mask_contact)
+        t_first = time_search[idx]
+        print(f"[SYNC FUERZA] Modo Primer Contacto -> T={t_first:.2f}s")
+        return t_first
+    
+    # ESTRATEGIA C: MAX PEAK (Fallback)
+    t_max = time_search[np.argmax(fz_search)]
+    print(f"[SYNC FUERZA] Fallback Max Peak -> T={t_max:.2f}s")
+    return t_max
+
+def detectar_t0_emg(df_emg, time_emg):
+    """
+    Encuentra el 'Estallido Muscular' principal sumando los canales clave.
+    Busca en TODO el archivo (primeros 30s) para corregir desfases grandes.
+    """
+    # 1. Identificar canales de "Impacto" (Tríceps, Pectoral, Flexores)
+    # Si no existen, usa todos los disponibles.
+    target_keywords = ['TRICEPS', 'PECT', 'FLEX', 'DELT']
+    cols_impact = []
+    
+    all_emg_cols = [c for c in df_emg.columns if '(uV)' in c and 'Switch' not in c]
+    
+    for col in all_emg_cols:
+        if any(key in col.upper() for key in target_keywords):
+            cols_impact.append(col)
+            
+    if not cols_impact: cols_impact = all_emg_cols # Fallback a todos
+    
+    # 2. Construir Señal Compuesta (Suma de Envolventes Rápidas)
+    # Usamos una envolvente rápida (20Hz) para detectar el pico con precisión temporal
+    composite_signal = np.zeros(len(time_emg))
+    
+    for col in cols_impact:
+        raw = df_emg[col].astype(float).values
+        # Rectificación y normalización simple
+        rect = np.abs(raw - np.mean(raw))
+        mx = np.max(rect)
+        if mx > 0:
+            composite_signal += (rect / mx) # Suma normalizada
+            
+    # 3. Buscar el Pico Máximo en la ventana de búsqueda
+    # Asumimos que el golpe es el evento de mayor activación muscular conjunta
+    mask = (time_emg > SKIP_START_S) & (time_emg < SEARCH_WINDOW_S)
+    
+    if np.sum(mask) == 0: return 0.0
+    
+    comp_search = composite_signal[mask]
+    time_search = time_emg[mask]
+    
+    # Suavizado ligero para evitar picos de ruido de 1 muestra
+    # (Promedio móvil simple de 50ms)
+    window_smooth = int(0.05 * FS_EMG_ORIG)
+    comp_smooth = np.convolve(comp_search, np.ones(window_smooth)/window_smooth, mode='same')
+    
+    idx_max = np.argmax(comp_smooth)
+    t_sync = time_search[idx_max]
+    
+    print(f"[SYNC EMG] Estallido Muscular Compuesto detectado -> T={t_sync:.2f}s")
+    return t_sync
+
+def detectar_t0_xsens(df_k):
+    cols_hand = [c for c in df_k.columns if 'hand' in c.lower() or 'mano' in c.lower()]
+    if not cols_hand: return 0.0
+    
+    col_target = cols_hand[0]
+    time = df_k['time'].values
+    
+    try:
+        if df_k[col_target].dtype == object:
+            val = df_k[col_target].astype(str).str.split(',', expand=True)[0].astype(float).values
+        else:
+            val = df_k[col_target].values
+        motion = np.abs(np.diff(val, prepend=val[0]))
+    except: return 0.0
+    
+    mask = (time > SKIP_START_S) & (time < SEARCH_WINDOW_S)
+    if np.sum(mask) == 0: return 0.0
+    
+    mot_search = motion[mask]
+    time_search = time[mask]
+    
+    # Buscar Triple Gesto o Max
+    peaks, _ = find_peaks(mot_search, height=np.max(mot_search)*0.3, distance=10)
+    
+    if len(peaks) >= 3:
+        if (time_search[peaks[2]] - time_search[peaks[0]]) < 5.0:
+            print(f"[SYNC XSENS] Triple Gesto detectado -> T={time_search[peaks[0]]:.2f}s")
+            return time_search[peaks[0]]
+            
+    idx_max = np.argmax(mot_search)
+    print(f"[SYNC XSENS] Movimiento Máximo detectado -> T={time_search[idx_max]:.2f}s")
+    return time_search[idx_max]
+
+# =========================================================
+# 4. MAIN
 # =========================================================
 def main():
-    path_f, path_e, path_k, out_dir = preparar_rutas()
-    if None in [path_f, path_e, path_k]:
-        print("[ERROR] Faltan archivos. Revisa que existan las carpetas FUERZA, EMG y PROCESADO-Xsens con sus archivos.")
-        return
-
-    # --- CARGA ---
-    df_f = pd.read_csv(path_f)
-    df_f['Time_s'] -= df_f['Time_s'].iloc[0]
+    if len(sys.argv) < 2:
+        print("Uso: python fusion.py <RUTA>")
+        sys.exit(1)
     
-    df_k = pd.read_csv(path_k, sep='\t', skiprows=5)
-    
-    df_e_raw = pd.read_csv(path_e, sep=';', decimal=',', quotechar='"', skiprows=3, low_memory=False)
-    df_e_raw.columns = [c.replace('"', '').strip() for c in df_e_raw.columns]
-    
-    # Gestión robusta de la columna de tiempo (String vs Float)
-    if df_e_raw['time'].dtype == object:
-        time_e_orig = df_e_raw['time'].str.replace(',', '.').astype(float).values
-    else:
-        time_e_orig = df_e_raw['time'].values
+    ruta_toma = sys.argv[1] 
+    path_f, path_e, path_k, out_dir = preparar_rutas(ruta_toma)
+    if None in [path_f, path_e, path_k]: return
 
-    # --- SINCRONIZACIÓN ---
-    # Detectamos el pico máximo para alinear el evento de impacto ("Clap")
-    t_f_sync = df_f.loc[df_f['Fz'].abs().idxmax(), 'Time_s']
-    t_e_sync = time_e_orig[df_e_raw['RT LAT. TRICEPS (uV)'].abs().idxmax()]
-    t_k_sync = 21.32 # Valor de referencia Xsens obtenido manualmente para V1
-
-    print(f"-> Sincronización calculada: F:{t_f_sync:.2f}s | E:{t_e_sync:.2f}s | K:{t_k_sync:.2f}s")
-
-    # --- DATASET MAESTRO (100Hz) ---
-    # Definimos una ventana desde 2 segundos antes del impacto hasta el final de la toma
-    t_master = np.arange(-2.0, df_f['Time_s'].max() - t_f_sync, 1/FS_MASTER)
-    df_out = pd.DataFrame({'Time': t_master})
-    f_remap = lambda t, y: interp1d(t, y, bounds_error=False, fill_value=0)(t_master)
-
-    # Alinear Fuerza
-    for c in ['Fx', 'Fy', 'Fz']: 
-        df_out[f'F_{c}'] = f_remap(df_f['Time_s'] - t_f_sync, df_f[c])
-
-    # --- PROCESADO EMG CIENTÍFICO (DUAL) ---
-    blacklist = ['time', 'Activity', 'Marker', 'Sync', 'Switch', 'Ultium EMG.Switch 1 (On)']
-    emg_cols = [c for c in df_e_raw.columns if 'uV' in c and not any(b in c for b in blacklist)]
-    dict_raw_2000hz = {}
-
-    print("\nANÁLISIS DE CALIDAD Y PROCESADO (Standards Noraxon/SENIAM):")
-    for col in emg_cols:
-        raw_val = df_e_raw[col].astype(float).values
+    try:
+        # --- CARGA ---
+        df_f = pd.read_csv(path_f)
+        df_f['Time_s'] -= df_f['Time_s'].iloc[0]
+        if df_f['Fz'].min() < -50: df_f['Fz'] = df_f['Fz'] * -1
         
-        # 1. Centrado (Remove DC Offset)
-        centered = na.remove_dc_offset(raw_val)
-        dict_raw_2000hz[col] = centered # Guardamos para la gráfica de alta resolución
-
-        # 2. Filtrado y Envolvente para el Dataset Maestro
-        filt = na.butter_bandpass_filter(centered, na.CUTOFF_LOW, na.CUTOFF_HIGH, FS_EMG_ORIG)
-        env = na.compute_linear_envelope(filt, FS_EMG_ORIG, cutoff=na.ENVELOPE_CUTOFF)
-        df_out[f'EMG_{col}'] = f_remap(time_e_orig - t_e_sync, env)
+        df_k = pd.read_csv(path_k, sep='\t', skiprows=5)
         
-        # 3. Reporte de Calidad en consola
-        qa = na.calculate_signal_quality_snr(centered)
-        print(f" > {col:22} | SNR: {qa['SNR_dB']:4.1f} dB | {qa['Status']}")
+        df_e_raw = pd.read_csv(path_e, sep=';', decimal=',', quotechar='"', skiprows=3, low_memory=False)
+        df_e_raw.columns = [c.replace('"', '').strip() for c in df_e_raw.columns]
+        
+        if df_e_raw['time'].dtype == object:
+            time_e_orig = df_e_raw['time'].str.replace(',', '.').astype(float).values
+        else:
+            time_e_orig = df_e_raw['time'].values
 
-    # --- KINEMATICS (XSENS) ---
-    for c in [x for x in df_k.columns if 'imu' in x]:
-        qs = df_k[c].str.split(',', expand=True).astype(float)
-        for i in range(4): 
-            df_out[f'{c}_q{i}'] = f_remap(df_k['time'] - t_k_sync, qs[i])
+        # --- SINCRONIZACIÓN INDEPENDIENTE ---
+        # Calculamos el T=0 ideal para CADA dispositivo por separado
+        t_f_sync = detectar_t0_fuerza(df_f)
+        t_e_sync = detectar_t0_emg(df_e_raw, time_e_orig)
+        t_k_sync = detectar_t0_xsens(df_k)
 
-    # --- GUARDAR Y VISUALIZAR ---
-    csv_path = os.path.join(out_dir, "DATASET_MAESTRO.csv")
-    df_out.to_csv(csv_path, index=False)
-    
-    generar_imagenes_suite(df_out, dict_raw_2000hz, time_e_orig, t_e_sync, out_dir)
-    print(f"\n[ÉXITO] Todo generado correctamente en: {out_dir}")
+        print(f"-> PUNTOS CERO: Fuerza={t_f_sync:.2f}s | EMG={t_e_sync:.2f}s | Xsens={t_k_sync:.2f}s")
+
+        # --- FUSIÓN Y REMUESTREO (100 Hz) ---
+        # Creamos una base de tiempo común de -2s a +Fin
+        t_max = df_f['Time_s'].max() - t_f_sync
+        t_master = np.arange(-2.0, t_max, 1/FS_MASTER)
+        df_out = pd.DataFrame({'Time': t_master})
+        f_remap = lambda t, y: interp1d(t, y, bounds_error=False, fill_value=0)(t_master)
+
+        # 1. Fuerza (Alineada a su T0)
+        for c in ['Fx', 'Fy', 'Fz']: 
+            df_out[f'F_{c}'] = f_remap(df_f['Time_s'] - t_f_sync, df_f[c])
+
+        # 2. EMG (Alineado a su T0)
+        emg_cols = [c for c in df_e_raw.columns if 'uV' in c and 'Switch' not in c]
+        dict_raw = {} # Para gráfica raw
+
+        for col in emg_cols:
+            raw = df_e_raw[col].astype(float).values
+            cent = na.remove_dc_offset(raw)
+            dict_raw[col] = cent
+            # Procesado estándar (Filtro + Envolvente)
+            filt = na.butter_bandpass_filter(cent, 20, 450, FS_EMG_ORIG)
+            env = na.compute_linear_envelope(filt, FS_EMG_ORIG, 6)
+            # Alinear usando el t_e_sync calculado
+            df_out[f'EMG_{col}'] = f_remap(time_e_orig - t_e_sync, env)
+
+        # 3. Xsens (Alineado a su T0)
+        for c in [x for x in df_k.columns if 'imu' in x]:
+            try:
+                if df_k[c].dtype == object:
+                    qs = df_k[c].astype(str).str.split(',', expand=True).astype(float)
+                    for i in range(4): 
+                        if i < qs.shape[1]: df_out[f'{c}_q{i}'] = f_remap(df_k['time'] - t_k_sync, qs[i])
+                else:
+                    df_out[f'{c}'] = f_remap(df_k['time'] - t_k_sync, df_k[c])
+            except: pass
+
+        # --- GUARDAR ---
+        df_out.to_csv(os.path.join(out_dir, "DATASET_MAESTRO.csv"), index=False)
+        generar_imagenes_suite(df_out, dict_raw, time_e_orig, t_e_sync, out_dir)
+        print(f"[EXITO] {os.path.basename(ruta_toma)} procesada.\n")
+        
+    except Exception as e:
+        print(f"[ERROR EXCEPCIÓN] Fallo en {ruta_toma}: {e}\n")
 
 # =========================================================
-# 4. SUITE DE VISUALIZACIÓN (4 GRÁFICAS)
+# 5. VISUALIZACIÓN
 # =========================================================
 def generar_imagenes_suite(df, dict_raw, t_orig, t_sync_e, folder):
     emg_cols = [c for c in df.columns if 'EMG' in c]
     n_musc = len(emg_cols)
     
-    # --- 1. DESGLOSE PROCESADO (Envolventes 6Hz) ---
-    
+    # 1. PROCESADO
     fig1, axes1 = plt.subplots(n_musc, 1, figsize=(12, 2 * n_musc), sharex=True)
     if n_musc == 1: axes1 = [axes1]
     for i, col in enumerate(emg_cols):
-        axes1[i].plot(df['Time'], df[col], color='green', linewidth=1.5)
-        axes1[i].set_title(f"PROCESADA (Env 6Hz): {col.replace('EMG_', '')}", loc='left', fontsize=10, fontweight='bold')
-        axes1[i].axvline(0, color='black', linestyle='--', linewidth=1.5)
-        axes1[i].set_ylabel("uV")
-        axes1[i].grid(True, alpha=0.2)
-    axes1[-1].set_xlabel("Tiempo (s)")
-    plt.tight_layout(); plt.savefig(os.path.join(folder, "DESGLOSE_1_PROCESADO.png"), dpi=200)
+        axes1[i].plot(df['Time'], df[col], color='green', lw=1.2)
+        axes1[i].set_title(f"PROCESADA: {col.replace('EMG_', '')}", loc='left', fontsize=9)
+        axes1[i].axvline(0, color='k', linestyle='--', lw=1)
+    plt.tight_layout(); plt.savefig(os.path.join(folder, "DESGLOSE_1_PROCESADO.png"), dpi=100)
+    plt.close(fig1)
 
-    # --- 2. DESGLOSE RAW (Frecuencia Nativa 2000Hz) ---
-    
+    # 2. RAW
     fig2, axes2 = plt.subplots(n_musc, 1, figsize=(12, 2 * n_musc), sharex=True)
     if n_musc == 1: axes2 = [axes2]
-    t_rel_raw = t_orig - t_sync_e
-    for i, (name, signal) in enumerate(dict_raw.items()):
-        axes2[i].plot(t_rel_raw, signal, color='gray', linewidth=0.5, alpha=0.8)
-        axes2[i].set_title(f"RAW (2000Hz): {name}", loc='left', fontsize=10, fontweight='bold')
-        axes2[i].axvline(0, color='black', linestyle='--', linewidth=1.5)
-        axes2[i].set_xlim(-1, 5) # Zoom para ver el detalle del impacto
-        axes2[i].set_ylabel("uV")
-        axes2[i].grid(True, alpha=0.2)
-    axes2[-1].set_xlabel("Tiempo (s)")
-    plt.tight_layout(); plt.savefig(os.path.join(folder, "DESGLOSE_2_RAW.png"), dpi=200)
+    t_raw = t_orig - t_sync_e
+    for i, (name, sig) in enumerate(dict_raw.items()):
+        axes2[i].plot(t_raw, sig, color='gray', linewidth=0.5)
+        axes2[i].set_title(f"RAW: {name}", loc='left', fontsize=9)
+        axes2[i].axvline(0, color='k', linestyle='--', lw=1)
+        axes2[i].set_xlim(-1, 5)
+    plt.tight_layout(); plt.savefig(os.path.join(folder, "DESGLOSE_2_RAW.png"), dpi=100)
+    plt.close(fig2)
 
-    # --- 3. DASHBOARD CONTROL (Fuerza + Velocidad) ---
-    fig3, (axf, axv) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
-    axf.plot(df['Time'], df['F_Fz'], 'r', label='Fuerza Fz (N)')
-    axf.axvline(0, color='black', linestyle='--', linewidth=2)
-    axf.set_title("Dinámica de Carga (Eje Z)"); axf.grid(True); axf.legend()
+    # 3. CONTROL NORMALIZADO (Para ver sync real)
+    plt.figure(figsize=(10, 6))
     
-    h_cols = [c for c in df.columns if 'hand_r_imu_q' in c]
-    if len(h_cols) == 4:
-        # Calculamos magnitud del cambio de orientación como proxy de velocidad
-        vel = np.linalg.norm(np.diff(df[h_cols].values, axis=0, prepend=df[h_cols].values[0:1]), axis=1)
-        axv.plot(df['Time'], vel, 'b', label='Velocidad Mano (IMU)')
-        axv.axvline(0, color='black', linestyle='--', linewidth=2)
-        axv.set_title("Cinemática del Segmento Mano"); axv.grid(True); axv.legend()
-    axes3 = axv.set_xlabel("Tiempo (s)")
-    plt.tight_layout(); plt.savefig(os.path.join(folder, "DASHBOARD_CONTROL.png"), dpi=200)
-
-    # --- 4. VALIDACIÓN ZOOM (Sincronización al milisegundo) ---
+    # Fuerza Normalizada
+    f_norm = df['F_Fz'] / (df['F_Fz'].max() + 1e-6)
+    plt.plot(df['Time'], f_norm, 'r', label='Fuerza (Norm)', lw=2)
     
-    plt.figure(figsize=(10, 5))
-    # Normalizamos señales para comparar el "timing" visualmente
-    plt.plot(df['Time'], df['F_Fz']/df['F_Fz'].max(), 'r', label='Fuerza (Norm)')
+    # EMG Promedio Normalizado (Suma de todos)
     if n_musc > 0:
-        plt.plot(df['Time'], df[emg_cols[0]]/df[emg_cols[0]].max(), 'g', alpha=0.5, label='EMG Ref (Norm)')
-    
-    plt.axvline(0, color='black', linestyle='--', linewidth=2, label='T=0 (Punto Maestro)')
-    plt.xlim(-0.5, 0.5) # Zoom muy fuerte de 500ms
-    plt.title("Auditoría de Sincronización (Zoom +/- 500ms)")
-    plt.legend(); plt.grid(True); plt.xlabel("Tiempo (s)")
-    plt.savefig(os.path.join(folder, "VALIDACION_SYNC_ZOOM.png"), dpi=200)
-    plt.close('all')
+        avg_emg = df[emg_cols].mean(axis=1)
+        e_norm = avg_emg / (avg_emg.max() + 1e-6)
+        plt.plot(df['Time'], e_norm, 'g', alpha=0.6, label='EMG Promedio (Norm)', lw=1.5)
+        
+    plt.axvline(0, color='k', linestyle='--', label='T=0 (Sincronización)')
+    plt.title("VALIDACIÓN DE SINCRONIZACIÓN (Señales Normalizadas 0-1)")
+    plt.legend(loc='upper right')
+    plt.xlim(-1.0, 1.0) # Zoom de 2 segundos alrededor del golpe
+    plt.grid(True, alpha=0.3)
+    plt.savefig(os.path.join(folder, "DASHBOARD_CONTROL.png"), dpi=100)
+    plt.close()
 
 if __name__ == "__main__":
     main()
