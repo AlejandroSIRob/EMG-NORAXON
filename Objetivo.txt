@@ -34,18 +34,3 @@ interpretar el esfuerzo físico realizado por un humano que colabora con un robo
 de algoritmos de cinemática inversa para extrapolar los movimientos del esqueleto del humano
 durante las tareas colaborativas
 
-
-
-NUEVAS TAREAS
-
-analizar posicion de sesnores en las 3 diferentes tareas, necesidad de los dos brazos o uno?
-    valorar subtareas y variantes de las propias
-
-        ej: ensamblado: valorar si es con un brazo o dos, si podemos usar solo un brazo 12 sensores pero en un futuro interesa usar dos brazos
-            corte de carne: en principio podemos poenr ttodos los emg en un brazo los 12, pero valorar si quererimos el otro para el apoyo
-            desmoldeado: valorar si puede ser colaborativa con un robot, en principio 12 sensores en el mismo brazo
-necesidad de combinar awinda con emg, y guantes porq?
-posicion sensores awinda como se colan ¿solapan posicion con los emg? ¿en que podemos usarlos?
-objetivo 
-1.- replicar tarea en brazo robótico
-2.- calculo hergonomia de las tareas

@@ -1,8 +1,11 @@
 """
-FUSION MULTIMODAL: FUERZA (OnRobot) + EMG (Noraxon) + CINEMÁTICA (OpenSim)
--------------------------------------------------------------------------
+FUSION MULTIMODAL AUTOMÁTICA (V11 - Full Scientific Suite)
+---------------------------------------------------------
 Autor: Alejandro Solar Iglesias
-Objetivo: Sincronizar y analizar datos heterogéneos para Tesis/TFM.
+Objetivo: 
+  - Procesado Dual: Raw (2000Hz) para visualización y Procesado (100Hz) para datos.
+  - Sincronización triple: Fuerza, EMG y Xsens.
+  - Dashboards de Control y Validación de Calidad (SNR).
 """
 
 import pandas as pd
@@ -10,224 +13,184 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d
 import os
+import glob
+import sys
 
-# Importamos tus librerías científicas
-import noraxon_analytics as na
-import synergy_lib as sl
+# IMPORTAMOS TU LIBRERÍA CIENTÍFICA
+try:
+    import noraxon_analytics as na
+except ImportError:
+    print("[ERROR] No se encuentra 'noraxon_analytics.py'. Asegúrate de que esté en la misma carpeta.")
+    sys.exit()
 
-# --- CONFIGURACIÓN ---
-FS_MASTER = 2000.0  # Frecuencia maestra (usualmente la de los EMG es la más alta)
+# =========================================================
+# 1. CONFIGURACIÓN
+# =========================================================
+RUTA_CARPETA_TOMA = r"C:\Users\alexs\Desktop\MUESTRAS\V1"
+FS_MASTER = 100.0        
+FS_EMG_ORIG = na.DEFAULT_FS # 2000 Hz
 
-def cargar_fuerza_onrobot(csv_path):
-    """Carga datos del script hexFT.py"""
-    print(f"-> Cargando Fuerza: {os.path.basename(csv_path)}")
-    df = pd.read_csv(csv_path)
-    # El script hexFT guarda columnas: Time_s, SampleCount, Fx, Fy, Fz...
-    # Aseguramos que el tiempo empiece en 0 relativo
-    df['Time_s'] = df['Time_s'] - df['Time_s'].iloc[0]
-    return df
+# =========================================================
+# 2. MOTOR DE BÚSQUEDA
+# =========================================================
+def buscar_archivo(patron_glob):
+    archivos = glob.glob(patron_glob)
+    return archivos[0] if archivos else None
 
-def cargar_cinematica_opensim(mot_path):
-    """Carga resultados de Cinemática Inversa (.mot) de OpenSim"""
-    print(f"-> Cargando Cinemática: {os.path.basename(mot_path)}")
+def preparar_rutas():
+    print(f"\n--- INICIANDO PROCESADO MAESTRO: {os.path.basename(RUTA_CARPETA_TOMA)} ---")
+    out_dir = os.path.join(RUTA_CARPETA_TOMA, "PROCESADO_COMPLETO")
+    if not os.path.exists(out_dir): os.makedirs(out_dir)
     
-    # OpenSim .mot tiene un header variable, usualmente 'endheader' marca el fin
-    with open(mot_path, 'r') as f:
-        lines = f.readlines()
-        skip = 0
-        for i, line in enumerate(lines):
-            if 'endheader' in line:
-                skip = i + 1
-                break
+    # Localizar archivos críticos
+    f_path = buscar_archivo(os.path.join(RUTA_CARPETA_TOMA, "FUERZA", "*.csv"))
+    e_path = buscar_archivo(os.path.join(RUTA_CARPETA_TOMA, "EMG", "*.csv"))
+    k_path = buscar_archivo(os.path.join(RUTA_CARPETA_TOMA, "PROCESADO-Xsens", "*.sto"))
     
-    df = pd.read_csv(mot_path, sep='\t', skiprows=skip)
-    return df
+    return f_path, e_path, k_path, out_dir
 
-def sincronizar_senales(df_fuerza, df_emg_accel, umbral_fuerza=2.0, umbral_accel=1.5):
-    """
-    ALGORITMO DE SINCRONIZACIÓN (EL "CLAQUEO")
-    Busca el primer pico significativo en Fuerza (Fz) y en Acelerometría (Accel)
-    y calcula el desfase (lag) para alinearlos.
-    """
-    print("\n[SINCRONIZACIÓN] Buscando evento de impacto (Claqueta)...")
-    
-    # 1. Detectar pico en Fuerza (Fz suele ser negativa al presionar, usamos abs)
-    # Asumimos que los golpes de sincro ocurren en los primeros 10 segundos
-    fz_slice = df_fuerza[df_fuerza['Time_s'] < 10]['Fz'].abs()
-    idx_f = fz_slice[fz_slice > umbral_fuerza].first_valid_index()
-    
-    if idx_f is None:
-        print("   [ADVERTENCIA] No se detectó pico de fuerza. Asumiendo T=0.")
-        t_fuerza = 0
-    else:
-        t_fuerza = df_fuerza.loc[idx_f, 'Time_s']
-        print(f"   - Impacto Fuerza detectado en T={t_fuerza:.3f}s")
-
-    # 2. Detectar pico en Acelerómetro (Usamos la magnitud de un sensor clave, ej: Mano)
-    # df_emg_accel suele venir como diccionario de numpy arrays desde tu librería.
-    # Convertimos a DataFrame temporal para buscar
-    # Buscamos en el primer sensor de aceleración disponible
-    keys_accel = [k for k in df_emg_accel.keys() if 'Accel' in k]
-    if not keys_accel:
-        print("   [ERROR] No hay datos de acelerometría para sincronizar.")
-        return 0
-    
-    acc_data = df_emg_accel[keys_accel[0]] # Tomamos el primero
-    # Crear eje de tiempo temporal para accel
-    t_accel_vec = np.arange(len(acc_data)) / FS_MASTER
-    
-    # Buscar pico (Umbral en Gs o mG)
-    # Noraxon suele dar mG. 1500 mG = 1.5 G
-    idx_a = np.where(np.abs(acc_data) > (umbral_accel * 1000))[0] # Convertir a mG si necesario
-    
-    if len(idx_a) == 0:
-        print("   [ADVERTENCIA] No se detectó pico de aceleración. Asumiendo T=0.")
-        t_accel = 0
-    else:
-        t_accel = t_accel_vec[idx_a[0]]
-        print(f"   - Impacto Accel detectado en T={t_accel:.3f}s")
-        
-    # 3. Calcular Desfase (Shift)
-    # Si Fuerza ocurre en t=5 y Accel en t=8, EMG va adelantada 3s.
-    # Queremos alinear todo al tiempo de la Fuerza (nuestro reloj maestro robótico)
-    lag = t_accel - t_fuerza
-    print(f"   -> DESFASE CALCULADO: {lag:.3f}s (Se ajustará el EMG/IMU)")
-    
-    return lag
-
-def remapear_a_frecuencia_maestra(tiempo_maestro, tiempo_sen, senal_val):
-    """Interpolación para poner todas las señales en el mismo vector de tiempo"""
-    f = interp1d(tiempo_sen, senal_val, kind='linear', bounds_error=False, fill_value=0)
-    return f(tiempo_maestro)
-
-def main_fusion():
-    # --- 1. DEFINIR RUTAS DE ARCHIVOS  ---
-    # Cambia esto por tus rutas reales o usa argparse
-    path_fuerza = "datos_sensor_fuerza.csv"
-    path_emg = "datos_noraxon.csv"
-    # path_ik = "Resultados_Linux/ik_result.mot" # Opcional si ya procesaste OpenSim
-    
-    print("=== INICIANDO FUSIÓN DE DATOS MULTIMODAL ===")
-    
-    # A. Cargar Datos
-    try:
-        df_force = cargar_fuerza_onrobot(path_fuerza)
-        
-        # Usamos tu librería noraxon para cargar todo (EMG + Accel)
-        emg_dict, time_emg, fs_emg, accel_dict, _, _ = na.load_noraxon_csv_multi(path_emg)
-        
-    except FileNotFoundError as e:
-        print(f"[ERROR CRÍTICO] Falta archivo: {e}")
+# =========================================================
+# 3. MAIN (Procesado Dual Completo)
+# =========================================================
+def main():
+    path_f, path_e, path_k, out_dir = preparar_rutas()
+    if None in [path_f, path_e, path_k]:
+        print("[ERROR] Faltan archivos. Revisa que existan las carpetas FUERZA, EMG y PROCESADO-Xsens con sus archivos.")
         return
 
-    # B. Sincronización
-    # Usamos los acelerómetros de Noraxon para sincronizar con la Fuerza
-    lag_emg = sincronizar_senales(df_force, accel_dict)
+    # --- CARGA ---
+    df_f = pd.read_csv(path_f)
+    df_f['Time_s'] -= df_f['Time_s'].iloc[0]
     
-    # Ajustamos el tiempo del EMG
-    # Si lag es positivo (EMG empezó después), restamos. 
-    # La lógica exacta depende de quién empezó a grabar primero. 
-    # Asumimos aquí: Alineamos el pico EMG al tiempo 0 del pico Fuerza.
-    time_emg_sync = time_emg - lag_emg
+    df_k = pd.read_csv(path_k, sep='\t', skiprows=5)
+    
+    df_e_raw = pd.read_csv(path_e, sep=';', decimal=',', quotechar='"', skiprows=3, low_memory=False)
+    df_e_raw.columns = [c.replace('"', '').strip() for c in df_e_raw.columns]
+    
+    # Gestión robusta de la columna de tiempo (String vs Float)
+    if df_e_raw['time'].dtype == object:
+        time_e_orig = df_e_raw['time'].str.replace(',', '.').astype(float).values
+    else:
+        time_e_orig = df_e_raw['time'].values
 
-    # C. Construcción del DataFrame Maestro
-    # Usaremos el vector de tiempo de la FUERZA como base (ej. 1000Hz)
-    # O creamos uno nuevo regular a 2000Hz (FS_MASTER)
-    duracion = min(df_force['Time_s'].max(), time_emg_sync[-1])
-    t_master = np.arange(0, duracion, 1/FS_MASTER)
-    
-    df_master = pd.DataFrame({'Time': t_master})
-    
-    print("\n[PROCESAMIENTO] Re-muestreado y fusión de señales...")
-    
-    # 1. Insertar Fuerza (Interpolada)
-    for col in ['Fx', 'Fy', 'Fz', 'Tx', 'Ty', 'Tz']:
-        df_master[f'Force_{col}'] = remapear_a_frecuencia_maestra(
-            t_master, df_force['Time_s'], df_force[col]
-        )
-        
-    # 2. Insertar EMG (Procesado con tu pipeline)
-    for musculo, raw_signal in emg_dict.items():
-        # A. Quitar Offset
-        sig_centered = na.remove_dc_offset(raw_signal)
-        # B. Filtro Pasa-Banda (20-450)
-        sig_filt = na.butter_bandpass_filter(sig_centered, 20, 450, fs_emg)
-        # C. Envolvente (6Hz)
-        sig_env = na.compute_linear_envelope(sig_filt, fs_emg, cutoff=6)
-        
-        # D. Interpolar al tiempo maestro
-        df_master[f'EMG_{musculo}'] = remapear_a_frecuencia_maestra(
-            t_master, time_emg_sync, sig_env
-        )
+    # --- SINCRONIZACIÓN ---
+    # Detectamos el pico máximo para alinear el evento de impacto ("Clap")
+    t_f_sync = df_f.loc[df_f['Fz'].abs().idxmax(), 'Time_s']
+    t_e_sync = time_e_orig[df_e_raw['RT LAT. TRICEPS (uV)'].abs().idxmax()]
+    t_k_sync = 21.32 # Valor de referencia Xsens obtenido manualmente para V1
 
-    # D. Análisis de la Tarea (Ej. Corte)
-    # Detectar cuando Fz supera 5 Newtons (Contacto con carne)
-    mask_corte = df_master['Force_Fz'].abs() > 5.0
-    
-    if mask_corte.any():
-        print(f"\n[ANÁLISIS] Detectadas fases de contacto (Fuerza > 5N)")
-        df_corte = df_master[mask_corte]
-        
-        mean_force = df_corte['Force_Fz'].mean()
-        peak_force = df_corte['Force_Fz'].min() # Negativo hacia abajo
-        print(f"   - Fuerza Media de Corte: {mean_force:.2f} N")
-        print(f"   - Pico Máximo: {peak_force:.2f} N")
-        
-        # Correlación EMG vs Fuerza en esa fase
-        print("   - Correlación Muscular con Fuerza Z:")
-        corrs = {}
-        for col in df_master.columns:
-            if 'EMG_' in col:
-                r = df_corte['Force_Fz'].corr(df_corte[col])
-                corrs[col] = r
-        
-        # Mostrar Top 3 músculos implicados en la fuerza
-        sorted_muscles = sorted(corrs.items(), key=lambda item: abs(item[1]), reverse=True)
-        for name, r in sorted_muscles[:3]:
-            print(f"     * {name}: r = {r:.3f}")
+    print(f"-> Sincronización calculada: F:{t_f_sync:.2f}s | E:{t_e_sync:.2f}s | K:{t_k_sync:.2f}s")
 
-        # E. Sinergias en la fase de corte
-        # Preparamos dataframe solo de EMG para tu librería synergy_lib
-        emg_cols = [c for c in df_master.columns if 'EMG_' in c]
-        df_emg_only = df_corte[emg_cols].copy()
-        # Renombramos quitando prefijo para que quede limpio en el gráfico
-        df_emg_only.columns = [c.replace('EMG_', '') for c in df_emg_only.columns]
-        
-        # Llamamos a tu librería (adaptada para recibir DF directo)
-        print("\n[SINERGIAS] Calculando módulos de control durante el corte...")
-        res_optimo = sl.buscar_sinergias_optimas(df_emg_only)
-        sl.generar_ranking_y_graficos(df_emg_only, res_optimo, "Resultados_Fusion", "Corte_Carne_Real")
+    # --- DATASET MAESTRO (100Hz) ---
+    # Definimos una ventana desde 2 segundos antes del impacto hasta el final de la toma
+    t_master = np.arange(-2.0, df_f['Time_s'].max() - t_f_sync, 1/FS_MASTER)
+    df_out = pd.DataFrame({'Time': t_master})
+    f_remap = lambda t, y: interp1d(t, y, bounds_error=False, fill_value=0)(t_master)
 
-    # F. Visualización Final
-    plt.figure(figsize=(12, 8))
+    # Alinear Fuerza
+    for c in ['Fx', 'Fy', 'Fz']: 
+        df_out[f'F_{c}'] = f_remap(df_f['Time_s'] - t_f_sync, df_f[c])
+
+    # --- PROCESADO EMG CIENTÍFICO (DUAL) ---
+    blacklist = ['time', 'Activity', 'Marker', 'Sync', 'Switch', 'Ultium EMG.Switch 1 (On)']
+    emg_cols = [c for c in df_e_raw.columns if 'uV' in c and not any(b in c for b in blacklist)]
+    dict_raw_2000hz = {}
+
+    print("\nANÁLISIS DE CALIDAD Y PROCESADO (Standards Noraxon/SENIAM):")
+    for col in emg_cols:
+        raw_val = df_e_raw[col].astype(float).values
+        
+        # 1. Centrado (Remove DC Offset)
+        centered = na.remove_dc_offset(raw_val)
+        dict_raw_2000hz[col] = centered # Guardamos para la gráfica de alta resolución
+
+        # 2. Filtrado y Envolvente para el Dataset Maestro
+        filt = na.butter_bandpass_filter(centered, na.CUTOFF_LOW, na.CUTOFF_HIGH, FS_EMG_ORIG)
+        env = na.compute_linear_envelope(filt, FS_EMG_ORIG, cutoff=na.ENVELOPE_CUTOFF)
+        df_out[f'EMG_{col}'] = f_remap(time_e_orig - t_e_sync, env)
+        
+        # 3. Reporte de Calidad en consola
+        qa = na.calculate_signal_quality_snr(centered)
+        print(f" > {col:22} | SNR: {qa['SNR_dB']:4.1f} dB | {qa['Status']}")
+
+    # --- KINEMATICS (XSENS) ---
+    for c in [x for x in df_k.columns if 'imu' in x]:
+        qs = df_k[c].str.split(',', expand=True).astype(float)
+        for i in range(4): 
+            df_out[f'{c}_q{i}'] = f_remap(df_k['time'] - t_k_sync, qs[i])
+
+    # --- GUARDAR Y VISUALIZAR ---
+    csv_path = os.path.join(out_dir, "DATASET_MAESTRO.csv")
+    df_out.to_csv(csv_path, index=False)
     
-    ax1 = plt.subplot(3, 1, 1)
-    ax1.plot(df_master['Time'], df_master['Force_Fz'], 'k', label='Fuerza Z (N)')
-    ax1.set_title("Fuerza de Interacción")
-    ax1.grid(True)
-    ax1.legend()
+    generar_imagenes_suite(df_out, dict_raw_2000hz, time_e_orig, t_e_sync, out_dir)
+    print(f"\n[ÉXITO] Todo generado correctamente en: {out_dir}")
+
+# =========================================================
+# 4. SUITE DE VISUALIZACIÓN (4 GRÁFICAS)
+# =========================================================
+def generar_imagenes_suite(df, dict_raw, t_orig, t_sync_e, folder):
+    emg_cols = [c for c in df.columns if 'EMG' in c]
+    n_musc = len(emg_cols)
     
-    ax2 = plt.subplot(3, 1, 2, sharex=ax1)
-    # Graficar solo los 3 músculos más activos
-    top_muscles = [m[0] for m in sorted_muscles[:3]] if 'sorted_muscles' in locals() else []
-    for col in top_muscles:
-        ax2.plot(df_master['Time'], df_master[col], label=col.replace('EMG_', ''))
-    ax2.set_title("Activación Muscular (Top 3)")
-    ax2.grid(True)
-    ax2.legend()
+    # --- 1. DESGLOSE PROCESADO (Envolventes 6Hz) ---
     
-    ax3 = plt.subplot(3, 1, 3, sharex=ax1)
-    # Si tuvieras datos de IK (ángulos), irían aquí
-    # Por ahora graficamos Fuerza Resultante vs Suma EMG
-    emg_sum = df_master[[c for c in df_master.columns if 'EMG_' in c]].sum(axis=1)
-    ax3.plot(df_master['Time'], emg_sum, 'r--', label='Suma EMG Total')
-    ax3.set_title("Esfuerzo Muscular Total Estimado")
-    ax3.set_xlabel("Tiempo (s)")
-    ax3.grid(True)
-    ax3.legend()
+    fig1, axes1 = plt.subplots(n_musc, 1, figsize=(12, 2 * n_musc), sharex=True)
+    if n_musc == 1: axes1 = [axes1]
+    for i, col in enumerate(emg_cols):
+        axes1[i].plot(df['Time'], df[col], color='green', linewidth=1.5)
+        axes1[i].set_title(f"PROCESADA (Env 6Hz): {col.replace('EMG_', '')}", loc='left', fontsize=10, fontweight='bold')
+        axes1[i].axvline(0, color='black', linestyle='--', linewidth=1.5)
+        axes1[i].set_ylabel("uV")
+        axes1[i].grid(True, alpha=0.2)
+    axes1[-1].set_xlabel("Tiempo (s)")
+    plt.tight_layout(); plt.savefig(os.path.join(folder, "DESGLOSE_1_PROCESADO.png"), dpi=200)
+
+    # --- 2. DESGLOSE RAW (Frecuencia Nativa 2000Hz) ---
     
-    plt.tight_layout()
-    plt.show()
+    fig2, axes2 = plt.subplots(n_musc, 1, figsize=(12, 2 * n_musc), sharex=True)
+    if n_musc == 1: axes2 = [axes2]
+    t_rel_raw = t_orig - t_sync_e
+    for i, (name, signal) in enumerate(dict_raw.items()):
+        axes2[i].plot(t_rel_raw, signal, color='gray', linewidth=0.5, alpha=0.8)
+        axes2[i].set_title(f"RAW (2000Hz): {name}", loc='left', fontsize=10, fontweight='bold')
+        axes2[i].axvline(0, color='black', linestyle='--', linewidth=1.5)
+        axes2[i].set_xlim(-1, 5) # Zoom para ver el detalle del impacto
+        axes2[i].set_ylabel("uV")
+        axes2[i].grid(True, alpha=0.2)
+    axes2[-1].set_xlabel("Tiempo (s)")
+    plt.tight_layout(); plt.savefig(os.path.join(folder, "DESGLOSE_2_RAW.png"), dpi=200)
+
+    # --- 3. DASHBOARD CONTROL (Fuerza + Velocidad) ---
+    fig3, (axf, axv) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+    axf.plot(df['Time'], df['F_Fz'], 'r', label='Fuerza Fz (N)')
+    axf.axvline(0, color='black', linestyle='--', linewidth=2)
+    axf.set_title("Dinámica de Carga (Eje Z)"); axf.grid(True); axf.legend()
+    
+    h_cols = [c for c in df.columns if 'hand_r_imu_q' in c]
+    if len(h_cols) == 4:
+        # Calculamos magnitud del cambio de orientación como proxy de velocidad
+        vel = np.linalg.norm(np.diff(df[h_cols].values, axis=0, prepend=df[h_cols].values[0:1]), axis=1)
+        axv.plot(df['Time'], vel, 'b', label='Velocidad Mano (IMU)')
+        axv.axvline(0, color='black', linestyle='--', linewidth=2)
+        axv.set_title("Cinemática del Segmento Mano"); axv.grid(True); axv.legend()
+    axes3 = axv.set_xlabel("Tiempo (s)")
+    plt.tight_layout(); plt.savefig(os.path.join(folder, "DASHBOARD_CONTROL.png"), dpi=200)
+
+    # --- 4. VALIDACIÓN ZOOM (Sincronización al milisegundo) ---
+    
+    plt.figure(figsize=(10, 5))
+    # Normalizamos señales para comparar el "timing" visualmente
+    plt.plot(df['Time'], df['F_Fz']/df['F_Fz'].max(), 'r', label='Fuerza (Norm)')
+    if n_musc > 0:
+        plt.plot(df['Time'], df[emg_cols[0]]/df[emg_cols[0]].max(), 'g', alpha=0.5, label='EMG Ref (Norm)')
+    
+    plt.axvline(0, color='black', linestyle='--', linewidth=2, label='T=0 (Punto Maestro)')
+    plt.xlim(-0.5, 0.5) # Zoom muy fuerte de 500ms
+    plt.title("Auditoría de Sincronización (Zoom +/- 500ms)")
+    plt.legend(); plt.grid(True); plt.xlabel("Tiempo (s)")
+    plt.savefig(os.path.join(folder, "VALIDACION_SYNC_ZOOM.png"), dpi=200)
+    plt.close('all')
 
 if __name__ == "__main__":
-    main_fusion()
+    main()
