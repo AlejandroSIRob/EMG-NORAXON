@@ -31,7 +31,13 @@ import glob
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.decomposition import NMF
-import noraxon_analytics as na # Tu librería propia
+import sys
+# Esto le dice a Python que busque en la carpeta anterior la libreria
+ruta_lib = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if ruta_lib not in sys.path:
+    sys.path.append(ruta_lib)
+# ---------------------------------------
+import noraxon_analytics as na
 
 # --- CONFIGURACIÓN GLOBAL (Basada en Literatura) ---
 
