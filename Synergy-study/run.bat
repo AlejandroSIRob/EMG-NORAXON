@@ -5,11 +5,11 @@ setlocal enabledelayedexpansion
 :: CONFIGURACIÓN
 :: ========================================================
 
-:: 1. Carpeta raíz donde están tus carpetas V1, V2, etc.
+:: 1. Carpeta raíz donde están tus carpetas de datos V1, V2, etc.
 set "CARPETA_RAIZ=C:\Users\alexs\Desktop\MUESTRAS"
 
 :: 2. Nombre de tu script de Python (debe estar en la misma carpeta que este .bat)
-set "SCRIPT_PYTHON=sinergia_final.py"
+set "SCRIPT_PYTHON=synergy.py"
 
 echo ========================================================
 echo      PROCESAMIENTO MASIVO DE SINERGIAS MUSCULARES
