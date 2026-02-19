@@ -17,6 +17,13 @@ for /D %%d in ("%CARPETA_RAIZ%\V*") do (
     
     :: 3. LLAMADA AL SCRIPT DE PYTHON
     :: Le pasamos la ruta de la carpeta encontrada como argumento
+    :: Vaciar carpeta de salida PROCESADO_COMPLETO antes de procesar
+    if exist "%%d\PROCESADO_COMPLETO" (
+        echo Eliminando carpeta PROCESADO_COMPLETO en %%~nxd...
+        rd /s /q "%%d\PROCESADO_COMPLETO"
+    )
+    mkdir "%%d\PROCESADO_COMPLETO"
+
     python fusion_multimodal.py "%%d"
     
     if !errorlevel! equ 0 (

@@ -126,7 +126,7 @@ def analizar_redundancia_pearson(df_active, output_folder, task_name):
     plt.tight_layout()
     plt.savefig(os.path.join(output_folder, f"Pearson_{task_name}.png"), dpi=300)
     print("   [VISUALIZAR] Se abrirá la matriz de Pearson. Cierra la ventana para continuar...")
-    plt.show() 
+    #plt.show() 
     plt.close()
     
     found_redundancy = False
@@ -221,7 +221,7 @@ def generar_ranking_y_graficos(df_active, best_result, output_folder, task_name)
     plt.tight_layout()
     plt.savefig(os.path.join(output_folder, f"W_Sinergias_{task_name}.png"), dpi=300)
     print("   [VISUALIZAR] Se abrirá el gráfico de Sinergias. Cierra la ventana para continuar...")
-    plt.show()
+    #plt.show()
     plt.close()
 
     # 2. Ranking
@@ -234,7 +234,7 @@ def generar_ranking_y_graficos(df_active, best_result, output_folder, task_name)
     plt.tight_layout()
     plt.savefig(os.path.join(output_folder, f"Ranking_{task_name}.png"), dpi=300)
     print("   [VISUALIZAR] Se abrirá el Ranking. Cierra la ventana para continuar...")
-    plt.show()
+    #plt.show()
     plt.close()
     
     return df_rank
