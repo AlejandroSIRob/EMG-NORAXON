@@ -8,8 +8,9 @@ setlocal enabledelayedexpansion
 :: 1. Carpeta raíz donde están tus carpetas de datos V1, V2, etc.
 set "CARPETA_RAIZ=C:\Users\alexs\Desktop\MUESTRAS"
 
-:: 2. Nombre de tu script de Python (debe estar en la misma carpeta que este .bat)
+:: 2. Nombre de tus scripts de Python
 set "SCRIPT_PYTHON=synergy.py"
+set "SCRIPT_RESUMEN=generar_tabla_resumen.py"
 
 echo ========================================================
 echo      PROCESAMIENTO MASIVO DE SINERGIAS MUSCULARES
@@ -35,8 +36,7 @@ for /D %%d in ("%CARPETA_RAIZ%\V*") do (
             del /Q "%%d\RESULTADOS_SINERGIAS\*.*"
         )
         
-        :: LLAMADA AL PYTHON
-        :: Le pasamos la ruta completa de la carpeta "V..." como argumento 1
+        :: LLAMADA AL PYTHON DE SINERGIAS
         python %SCRIPT_PYTHON% "%%d"
         
         if !errorlevel! equ 0 (
@@ -52,6 +52,13 @@ for /D %%d in ("%CARPETA_RAIZ%\V*") do (
 
 echo.
 echo ========================================================
-echo                 FIN DEL PROCESO MASIVO
+echo               FIN DEL PROCESO MASIVO
 echo ========================================================
+
+:: LLAMADA AL RECOLECTOR DE RESULTADOS
+:: Le pasamos la carpeta MUESTRAS entera para que busque todos los informes
+if exist %SCRIPT_RESUMEN% (
+    python %SCRIPT_RESUMEN% "%CARPETA_RAIZ%"
+)
+
 pause
