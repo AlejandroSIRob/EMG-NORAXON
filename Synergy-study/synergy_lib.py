@@ -10,15 +10,15 @@ REFERENCIAS CIENTÍFICAS Y METODOLÓGICAS (CITAS EXACTAS):
     Nature, 401(6755). -> [Pág. 789]: Reglas de actualización multiplicativa (solver='mu').
 
 [2] Pertusa Llopis, A. M. (2020). Estudio de sinergias musculares durante actividades de pedaleo. 
-    Universidad de Alicante. -> [Sec. 5.6.1, Pág. 30]: Modelo E = W x H. [Sec. 6.4.2, Pág. 47]: Criterio VAF.
+    Universidad de Alicante. -> [Sec. 5.6.1]: Modelo E = W x H. [Sec. 6.4.2]: Criterio VAF.
 
 [3] Yokoyama, H., et al. (2019). Muscle Synergy Analysis: A practical protocol. Bio-protocol 9(10).
     -> [Step 3.2]: Filtros Pasa-Banda (20-450 Hz).
     -> [Step 3.6]: Criterio de selección (Global VAF > 90%).
 
 [4] Konrad, P. (2005). The ABC of EMG. Noraxon Inc. USA.
-    -> [Pág. 12]: Calidad de señal y línea base (<5uV). 
-    -> [Pág. 27]: Procesamiento de Envolvente (RMS/Smoothing).
+    -> Calidad de señal y línea base (<5uV). 
+    ->Procesamiento de Envolvente (RMS/Smoothing).
 
 [5] Torres-Oviedo, G., & Ting, L. H. (2007). Muscle synergies characterizing muscle activation. 
     J. Neurophysiol, 98(4). -> [Pág. 2145, Eq. 1]: Fórmula matemática del VAF.
